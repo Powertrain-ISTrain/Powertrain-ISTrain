@@ -1,0 +1,263 @@
+%% -------------------- Vehicle / track (ISTrain) ------------------------
+m_loco   = 600 + 1800;   % [kg] loco + trailing mass
+g        = 9.81;         % [m/s^2]
+Crr      = 0.004;        % [-] rolling resistance coeff
+rw       = 0.100;        % [m] wheel radius
+G        = 10;           % [-] gearbox ratio
+mu       = 0.35;         % [-] adhesion (wheel–rail)
+n_m      = 2;            % [-] number of motors
+SF       = 30;           % [%] torque safety margin
+a_max_sys= 0.30;         % [m/s^2] max accel (your earlier constraint)
+
+v_max_test = 15/3.6;     % [m/s] test speed limit
+a_cmd_brk  = 1.3;        % [m/s^2] target decel during regen (Phase A)
+
+%% -------------------- Electrical limits & efficiencies (ISTrain) -------
+I_max      = 300;        % [A] system current limit
+I_chg_cmd  = 84;        % [A] commanded charge current (will be limited by ESR/I_max/adhesion)
+I_dis_cmd  = 100;        % [A] commanded discharge current (limited likewise)
+
+Vbus       = 45.0;       % [V] DC bus / top clamp while charging
+Vmin_cap   = 44.0;       % [V] minimum usable cap voltage on discharge (converter floor)
+
+eta_tx     = 0.85;       % transmission/drivetrain efficiency
+eta_motor  = 0.90;       % motor+inverter efficiency
+eta_dc     = 0.85;       % DC/DC converter efficiency
+eta_sc     = 0.90;       % supercap charge efficiency
+
+% Directional paths (same definitions as before)
+eta_reg    = eta_tx * eta_motor;             % wheel -> DC bus (regen)
+eta_dis    = eta_dc * eta_motor * eta_tx;    % cap -> wheel (motoring)
+eta_path   = eta_reg * eta_dc * eta_sc;      % wheel -> stored (info only)
+
+%% -------------------- Supercapacitor (ISTrain) -------------------------
+% keep the 48 V, 165 F module unless you want to switch
+C   = 165;               % [F]
+ESR = 0.0011;            % [ohm]
+cap_name = '48V 165F';
+
+%% -------------------- Pre-charge (ISTrain) -----------------------------
+% Use the "optimal V0" headroom idea from your original code so one braking
+% event can store ~Erecov_event. If you prefer a fixed value, set V0 directly.
+use_optimal_V0 = true;
+Erecov_event   = 7.8e3;  % [J] target energy per braking event (adjust if needed)
+
+if use_optimal_V0
+    V0 = sqrt(max(Vbus^2 - (2*Erecov_event)/C, 0));
+else
+    V0 = 0;
+end
+V0 = 44;      % safety clamp
+
+%% -------------------- Timeline ---------------------------------------
+dt = 0.01;
+
+%% ==================== PHASE A — BRAKING (charge) ======================
+tA_stop = v_max_test / a_cmd_brk;
+tA      = (0:dt:tA_stop).';   N = numel(tA);
+
+vA   = max(v_max_test - a_cmd_brk.*tA, 0);
+xA   = cumtrapz(tA, vA);
+F_rr = Crr * m_loco * g;
+F_adh= mu  * (m_loco * g;
+
+VcapA   = zeros(N,1);  VcapA(1) = V0;
+EcapA   = zeros(N,1);  EcapA(1) = 0.5*C*V0^2;
+PrecA   = zeros(N,1);
+IbusA   = zeros(N,1);
+FregenA = zeros(N,1);
+TperMA  = zeros(N,1);
+
+for k = 1:N-1
+    % --- If we've hit the top clamp, stop charging energy ---
+    if VcapA(k) >= Vbus - 1e-6
+        VcapA(k+1:end) = VcapA(k); EcapA(k+1:end) = EcapA(k);
+        PrecA(k:end)   = 0; IbusA(k:end) = 0; FregenA(k:end) = 0; TperMA(k:end)=0;
+        break
+    end
+
+    % --- Motor-side braking force cannot exceed adhesion ---
+    F_rr        = Crr * m_loco * g;
+    F_adh       = mu  * m_loco * g;
+
+    % --- Commanded bus charge current (constant), limited by ESR & I_max ---
+    I_esr_chg   = max((Vbus - VcapA(k)) / max(ESR,1e-6), 0);  % ESR limit into cap
+    I_allow_bus = min([I_chg_cmd, I_max, I_esr_chg]);         % [A] actual bus current
+
+    % --- Electrical power into DC bus (from machine) and into the cap ---
+    P_bus_in    = Vbus * I_allow_bus;               % [W] at DC bus
+    P_wheel_req = P_bus_in / max(eta_reg,1e-6);     % [W] wheel power needed
+    P_cap_store = P_bus_in * eta_dc * eta_sc;       % [W] stored in cap
+
+    % --- Convert required wheel power into braking force, respect adhesion ---
+    F_req_motor = P_wheel_req / max(vA(k), 1e-6);   % [N] braking force needed
+    F_used      = min(max(F_req_motor - F_rr, 0), F_adh);
+    FregenA(k)  = F_used;
+    TperMA(k)   = (F_used*rw)/(G*eta_tx)/n_m;
+
+    % --- If adhesion can't supply required power, downscale the bus current ---
+    Pwheels_av  = (F_used + F_rr) * vA(k);
+    P_bus_av    = eta_reg * Pwheels_av;
+    scale       = min(1, P_bus_av / max(P_bus_in,1e-9));
+    I_allow_bus = I_allow_bus * scale;
+    P_bus_in    = P_bus_in * scale;
+    P_cap_store = P_bus_in * eta_dc * eta_sc;
+
+    % --- State update ---
+    dE          = P_cap_store * dt;
+    EcapA(k+1)  = min(0.5*C*Vbus^2, EcapA(k) + dE);  % cannot exceed Vbus clamp
+    VcapA(k+1)  = min(sqrt(2*EcapA(k+1)/C), Vbus);
+
+    PrecA(k)    = P_cap_store;
+    IbusA(k)    = I_allow_bus;
+end
+
+E_recovered = EcapA(end);
+Vcap_end_A  = VcapA(end);
+
+%% ==================== PHASE B — ACCELERATION (discharge) ==============
+% Start at rest; accelerate using ONLY the supercap until:
+% - v reaches v_max_test, or
+% - Vcap hits Vmin_cap, or
+% - energy is exhausted.
+tB_max = 12;                      % [s] just a guard
+tB     = (0:dt:tB_max).';  NB = numel(tB);
+
+vB   = zeros(NB,1);               % starts from rest
+xB   = zeros(NB,1);
+VcapB= zeros(NB,1);  VcapB(1) = Vcap_end_A;   % start from Phase A final voltage
+EcapB= zeros(NB,1);  EcapB(1) = 0.5*C*VcapB(1)^2;
+
+PwheelsB = zeros(NB,1);
+IbusB    = zeros(NB,1);
+aB       = zeros(NB,1);
+
+for k = 1:NB-1
+    if VcapB(k) <= Vmin_cap || vB(k) >= v_max_test
+        vB(k+1:end)=vB(k); xB(k+1:end)=xB(k);
+        VcapB(k+1:end)=VcapB(k); EcapB(k+1:end)=EcapB(k); aB(k+1:end)=0; break
+    end
+
+    % --- Command discharge current, limited by ESR & I_max ---
+    I_esr_dis   = VcapB(k) / max(ESR,1e-6);
+    I_allow     = min([I_dis_cmd, I_max, I_esr_dis]);   % [A]
+    P_cap_out   = I_allow * VcapB(k);                   % [W] electrical
+    P_wheel_av  = eta_dis * P_cap_out;                  % [W] mechanical at wheels
+
+    % --- Acceleration from Eq. (5.4.1) + system cap ---
+    a_trac  = min(mu*g, a_max_sys);
+    a_pow   = P_wheel_av / max(m_loco * max(vB(k),1e-3), 1e-6);
+    a       = min(a_trac, a_pow);
+    aB(k)   = a;
+
+    % --- Draw only the power needed to achieve 'a' ---
+    P_wheel_need = m_loco * vB(k) * a;
+    P_cap_use    = P_wheel_need / max(eta_dis,1e-6);
+    P_cap_use    = min(P_cap_use, P_cap_out);
+    PwheelsB(k)  = eta_dis * P_cap_use;
+    IbusB(k)     = P_cap_use / max(VcapB(k),1e-6);
+
+    % --- Integrate kinematics & update cap state ---
+    vB(k+1) = min(vB(k) + a*dt, v_max_test);
+    xB(k+1) = xB(k) + vB(k)*dt;
+
+    dE          = P_cap_use * dt;
+    EcapB(k+1)  = max(EcapB(k) - dE, 0);
+    VcapB(k+1)  = sqrt(2*EcapB(k+1)/C);
+end
+
+
+% Trim B to the last updated index
+lastB = find(diff(vB)~=0 | diff(VcapB)~=0, 1, 'last');
+if isempty(lastB), lastB = 1; end
+tB = tB(1:lastB+1); vB = vB(1:lastB+1); xB = xB(1:lastB+1);
+VcapB = VcapB(1:lastB+1); EcapB = EcapB(1:lastB+1);
+PwheelsB = PwheelsB(1:lastB); IbusB = IbusB(1:lastB); aB = aB(1:lastB);
+
+%% -------------------- Report ------------------------------------------
+fprintf('--- ISTrain Energy Recovery ---\n');
+fprintf('Capacitor: %s | C=%.2f F | ESR=%.4f ohm\n', cap_name, C, ESR);
+fprintf('PHASE A (brake): V0=%.2f V  ->  V_end=%.2f V | E_recovered=%.1f J (%.2f Wh)\n', ...
+        V0, Vcap_end_A, E_recovered, E_recovered/3600);
+fprintf('PHASE B (accel): V_start=%.2f V  ->  V_end=%.2f V | v_end=%.2f km/h | t=%.2f s\n', ...
+        VcapB(1), VcapB(end), 3.6*vB(end), tB(end));
+fprintf('Overall charge path efficiency (wheel->stored): %.1f %%\n', 100*eta_path);
+
+%% -------------------- Plots -------------------------------------------
+figure('Name','ISTrain — Energy Recovery (Charge + Discharge)','Color','w');
+
+% --- Velocity-time (unchanged) ---
+subplot(2,3,1);
+plot(tA, vA, 'LineWidth', 1.8); hold on; grid on;
+plot(tB + tA(end), vB, 'LineWidth', 1.8);
+xlabel('Time [s]'); ylabel('Velocity [m/s]');
+title('Locomotive Velocity — charge (↓) then discharge (↑)');
+legend('Braking (regen)','Acceleration (supercap)','Location','best');
+
+% --- Power: use tB(1:end-1) to match PwheelsB length ---
+subplot(2,3,2);
+plot(tA, PrecA/1000, 'LineWidth', 1.8); hold on; grid on;
+plot(tB(1:end-1) + tA(end), PwheelsB/1000, 'LineWidth', 1.8);
+xlabel('Time [s]'); ylabel('Power [kW]');
+title('Power: stored (A) / delivered to wheels (B)');
+legend('P_{cap,in} (Phase A)','P_{wheels} (Phase B)','Location','best');
+
+% --- Cap voltage (states -> tB) ---
+subplot(2,3,3);
+plot(tA, VcapA, 'LineWidth', 1.8); hold on; grid on;
+plot(tB + tA(end), VcapB, 'LineWidth', 1.8);
+yline(Vbus,'--','V_{bus}'); yline(Vmin_cap,':','V_{min,cap}');
+xlabel('Time [s]'); ylabel('V_{cap} [V]');
+title('Supercap Voltage');
+
+% --- Energy (states -> tB) ---
+subplot(2,3,4);
+plot(tA, EcapA/1000, 'LineWidth', 1.8); hold on; grid on;
+plot(tB + tA(end), EcapB/1000, 'LineWidth', 1.8);
+xlabel('Time [s]'); ylabel('Energy [kJ]');
+title('Stored Energy (A) and Remaining Energy (B)');
+legend('Phase A','Phase B','Location','best');
+
+% --- Braking forces (Phase A) ---
+subplot(2,3,5);
+plot(tA, FregenA, 'LineWidth', 1.8); hold on; grid on;
+yline(F_rr,'--','F_{rr}'); yline(F_adh,':','F_{adh}');
+xlabel('Time [s]'); ylabel('Force [N]');
+title('Braking forces (regen, rolling, adhesion)');
+legend('F_{regen}','F_{rr}','F_{adh}','Location','best');
+
+% --- Acceleration over whole event (Phase A + B) ---
+subplot(2,3,6); hold on; grid on;
+
+% Phase A: braking deceleration (negative)
+plot(tA, -a_cmd_brk*ones(size(tA)), 'LineWidth', 1.8);
+
+% Phase B: acceleration from supercap
+plot(tB(1:end-1) + tA(end), aB, 'LineWidth', 1.8);
+
+% Traction limit line
+yline(mu*g,'--','\mu g (traction limit)');
+yline(-mu*g,'--','- \mu g (traction limit)');  % symmetric for braking
+
+xlabel('Time [s]');
+ylabel('a [m/s^2]');
+title('Acceleration: braking (−) and motoring (+)');
+legend('Braking decel (cmd)','Accel (supercap)','Traction limit','Location','best');
+
+%% -------------------- Extra Plots (Southampton style) ------------------
+
+% (a) Power generated by motors (similar to Fig. 27a)
+figure('Name','Southampton Comparison: Power','Color','w'); hold on; grid on;
+plot(tA(1:end-1), -(PrecA(1:end-1))/1000, 'b', 'LineWidth',1.8); % negative for braking
+plot(tB(1:end-1) + tA(end), PwheelsB/1000, 'r', 'LineWidth',1.8); % positive for accel
+xlabel('Time [s]'); ylabel('Power [kW]');
+title('Power generated by motors');
+legend('Charging @ 84 A','Discharging @ 105 A','Location','best');
+
+% (b) Distance vs Time
+figure('Name','Distance vs Time','Color','w'); hold on; grid on;
+plot(tA, xA, 'b', 'LineWidth',1.8); 
+plot(tB + tA(end), xB + xA(end), 'r', 'LineWidth',1.8);
+xlabel('Time [s]'); ylabel('Distance [m]');
+title('Distance travelled during braking and acceleration');
+legend('Braking phase','Acceleration phase','Location','best');
