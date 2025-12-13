@@ -11,7 +11,7 @@ Crr       = 0.004;    % rolling resistance coeff
 g         = 9.81;     % gravity [m/s^2]
 rw        = 0.100;    % wheel radius [m]
 mech_eff  = 0.85;     % drivetrain mechanical efficiency
-G         = 10;       % gearbox ratio
+G         = 4;       % gearbox ratio
 mu=0.35; % Friction coefficient (for adhesion purposes)
 n_m=2; % Number of motors
 SF=30; % Safety margin on torque (in percentage)
@@ -23,7 +23,7 @@ assignin('base','StepSize',StepSize);
 %% 0) User choices
 mt = 1;    % Motor choice
 bt=1;      % Battery choice
-dc = 1;    % Drive‑cycle choice
+dc = 2;    % Drive‑cycle choice
 
 
 %% 1) Motor parameters as Simulink.Parameter objects

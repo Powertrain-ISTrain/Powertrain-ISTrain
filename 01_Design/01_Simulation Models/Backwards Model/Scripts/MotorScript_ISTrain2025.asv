@@ -11,7 +11,7 @@ Crr       = 0.004;    % rolling resistance coeff
 g         = 9.81;     % gravity [m/s^2]
 rw        = 0.100;    % wheel radius [m]
 mech_eff  = 0.85;     % drivetrain mechanical efficiency
-G         = 10;       % gearbox ratio
+G         = 4;       % gearbox ratio
 mu=0.35; % Friction coefficient (for adhesion purposes)
 n_m=2; % Number of motors
 SF=30; % Safety margin on torque (in percentage)
@@ -385,6 +385,34 @@ tSOC = socTS.time;    ySOC = socTS.signals.values;
 tC   = crateTS.time;  yC   = crateTS.signals.values;
 
 tPdrawn = PdrawnTS.time;    yPdrawn = PdrawnTS.signals.values;
+%% 6a) Distance vs Time (commanded vs actual)
+
+% Commanded (from drive-cycle input)
+t_cmd     = time;                 % [s]
+v_cmd_ms  = speed / 3.6;          % [m/s] (speed is in km/h)
+x_cmd     = cumtrapz(t_cmd, v_cmd_ms);   % [m]
+
+% Actual (from model), if motor speed is available
+haveActual = exist('omega_sim','var') && ~isempty(omega_sim);
+
+if haveActual
+    % Vehicle linear speed from motor shaft speed (no slip; kinematics only)
+    v_act_ms = (omega_sim ./ G) * rw;          % [m/s]
+    x_act    = cumtrapz(time_sim, v_act_ms);   % [m]
+
+    figure('Name','Distance vs Time','Color','w'); hold on; grid on;
+    plot(t_cmd,    x_cmd, 'k--', 'LineWidth', 1.5);  % commanded
+    plot(time_sim, x_act, 'b-',  'LineWidth', 1.8);  % actual from model
+    xlabel('Time [s]'); ylabel('Distance [m]');
+    title('Distance vs Time (Commanded vs Actual)');
+    legend('Drive-cycle command','Model output','Location','best');
+else
+    % Fallback: only commanded distance
+    figure('Name','Distance vs Time (Commanded)','Color','w'); grid on;
+    plot(t_cmd, x_cmd, 'b-', 'LineWidth', 1.8);
+    xlabel('Time [s]'); ylabel('Distance [m]');
+    title('Distance vs Time (from drive-cycle)');
+end
 
 %% 7) Compute & plot efficiency
 P_mech = T_sim .* omega_sim;
