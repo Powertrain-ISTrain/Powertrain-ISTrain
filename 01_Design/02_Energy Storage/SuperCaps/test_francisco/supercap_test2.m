@@ -2,7 +2,6 @@
 clear; clc; close all;
 
 
-%test
 
 
 %% -------------------------- INPUTS USER CAN CHANGE -------------------------------------------------------------
@@ -105,6 +104,11 @@ while initial_speed > 0.05
     % update capacitor voltage
     % dV = (I * dt) / C
     cap_voltage = cap_voltage + (i_cap * dt / c);
+
+    if cap_voltage > 48
+        fprintf('!!! REACHED SUPERCAPACITOR MAXIMUM VOLTAGE\nDECREASE SUPERCAPACITOR PRE-CHARGE AND TRY AGAIN\n ');
+        return;
+    end
     
     % --- data logging ---
     time = time + dt;
@@ -153,28 +157,51 @@ results_drive = [];
 
 
 % driving loop
-while cap_voltage > cap_pre_charge
+while true
 
-    if velocity_drive < target_speed
-
-        current_now = current_accel_per_motor;
-        mode = 1;       %acceleration
-    
+    if cap_voltage > cap_pre_charge
+        has_energy = true;
     else
+        has_energy = false;
+    end
 
-        current_now = current_cruise_per_motor;
-        mode = 2;       % cruise
+
+    if has_energy == true
+
+
+        if velocity_drive < target_speed
+            %accelerating
+            current_now = current_accel_per_motor;
+            mode = 1;       %acceleration
+        
+        else
+            %cruising
+            current_now = current_cruise_per_motor;
+            mode = 2;       % cruise
+        end
+
+    else
+        %coasting
+        current_now = 0;
+        mode = 3;
+    end
+
+
+    if mode == 3
+        %coasting
+        force_push = 0;
+
+    else
+        torque_produced = 2 * (current_now * kt) * gearratio * 0.85;
+        force_push = torque_produced / wheelradius;
 
     end
 
 
-
-
     %compute real acceleration
-
-    torque_produced_total = 2 * (current_now * kt) * gearratio * 0.85;
-    force_push = torque_produced_total / wheelradius;
-    force_resistive = mass * 9.81 * crr;
+    crr_force = mass*9.81*crr;                      %rolling resistance force
+    f_mech = 0.002*mass*9.81;                       %estimate for drag on gearbox and bearings
+    force_resistive = crr_force + f_mech;
 
     force_net = force_push - force_resistive;
     accel_real = force_net / mass;
@@ -185,39 +212,44 @@ while cap_voltage > cap_pre_charge
 
 
     % speed limiter 
-    if velocity_drive > target_speed
+    if velocity_drive > target_speed && mode ~= 3
         velocity_drive = target_speed;
+    end
+
+    %stopping condition
+    if velocity_drive <= 0.05 && mode == 3
+        break;
     end
 
     distance_total = distance_total + (velocity_drive * dt);
 
-
-
-
-    % updating supercapacitor voltage
     wheelrpm_drive = (velocity_drive * 60) / (2 * pi * wheelradius);
     motor_w_drive = (wheelrpm_drive * gearratio) * (2*pi/60);
     v_bemf = motor_w_drive * ke;
 
-    voltage_headroom = cap_voltage - v_bemf;
-    if voltage_headroom < 0
-        % if back-emf > voltage on capacitor current cannot flow
-        velocity_drive = velocity_drive * 0.99;
-        current_now = 0;
+
+    % updating supercapacitor voltage
+    if has_energy
+    
+        voltage_headroom = cap_voltage - v_bemf;
+        if voltage_headroom < 0
+            % if back-emf > voltage on capacitor current cannot flow
+            velocity_drive = velocity_drive * 0.99;
+            current_now = 0;
+        end
+    
+        p_cap_draw = ((v_bemf * current_now)*2) / 0.85;
+    
+        i_cap_out = p_cap_draw / cap_voltage;
+        dV = (i_cap_out * dt) / c;
+        cap_voltage = cap_voltage - dV;
+        
     end
-
-    p_cap_draw = ((v_bemf * current_now)*2) / 0.85;
-
-    i_cap_out = p_cap_draw / cap_voltage;
-    dV = (i_cap_out * dt) / c;
-    cap_voltage = cap_voltage - dV;
+        
 
 
     time_drive = time_drive + dt;
-    results_drive = [results_drive; time_drive, velocity_drive, cap_voltage, distance_total, mode, v_bemf];
-
-    % Safety Break
-    if cap_voltage < 10; break; end
+    results_drive = [results_drive; time_drive, velocity_drive, cap_voltage, distance_total, mode, v_bemf, accel_real];
 
 
 end
@@ -303,8 +335,16 @@ figure('Name', 'Phase 2: Driving Range');
 % Subplot 1: Speed
 subplot(2,1,1);
 plot(results_drive(:,4), results_drive(:,2), 'b', 'LineWidth', 2);
-title(['Driving Profile (Total Dist: ' num2str(round(distance_total)) ' m)']);
+% Find the row index where Mode 3 starts
+idx_coast = find(results_drive(:,5)==3, 1);
+
+% Get the distance (Column 4) from that specific row
+if ~isempty(idx_coast)
+    xline(results_drive(idx_coast, 4), '--k', 'Power Cut');
+end
+title(['Total Distance: ' num2str(round(distance_total)) ' m']);
 ylabel('Speed (m/s)'); xlabel('Distance (m)');
+legend('Speed', 'Start of Coasting');
 grid on;
 
 % Subplot 2: Voltage Supply vs. Demand
