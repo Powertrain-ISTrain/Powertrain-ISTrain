@@ -23,7 +23,7 @@ assignin('base','StepSize',StepSize);
 %% 0) User choices
 mt = 1;    % Motor choice
 bt=1;      % Battery choice
-dc = 2;    % Drive‑cycle choice
+dc = 5;    % Drive‑cycle choice
 
 
 %% 1) Motor parameters as Simulink.Parameter objects
@@ -343,6 +343,28 @@ assignin('base','parametersBus',parametersBus);
 
             stopTime = time(end);
 
+    case 5  % After reaching 15 km/h: constant velocity at 15 km/h
+
+    v_const_kmh = 15;     % constant speed (km/h)
+    t_hold      = 600;     % hold duration (s)  <-- change as you want
+
+    % 10 Hz sampling
+    dt = 0.1;
+    time  = (0:dt:t_hold)';               % seconds
+    speed = v_const_kmh * ones(size(time)); % km/h
+
+    fprintf('Holding %.1f km/h for %.2f s\n', v_const_kmh, time(end));
+
+    % Create timeseries and assign to base
+    ts_speed = timeseries(speed, time);
+    assignin('base', 'ts_speed', ts_speed);
+    assignin('base', 'grade', 0.02);
+    assignin('base', 'friction_coeff', 0.004);
+    assignin('base', 'm_trail', 1800);
+
+    stopTime = time(end);
+
+           
         otherwise
             error('Drive-cycle %d not defined.', dc);
     end
