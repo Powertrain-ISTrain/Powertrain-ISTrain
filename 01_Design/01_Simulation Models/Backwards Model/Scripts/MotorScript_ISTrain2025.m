@@ -11,10 +11,11 @@ Crr       = 0.004;    % rolling resistance coeff
 g         = 9.81;     % gravity [m/s^2]
 rw        = 0.100;    % wheel radius [m]
 mech_eff  = 0.85;     % drivetrain mechanical efficiency
-G         = 4;       % gearbox ratio
+G         = 10;       % gearbox ratio
 mu=0.35; % Friction coefficient (for adhesion purposes)
 n_m=2; % Number of motors
 SF=30; % Safety margin on torque (in percentage)
+
 
 %% Solver fixed‑step size (for model config)
 StepSize = 0.001;               % [s]
@@ -23,7 +24,7 @@ assignin('base','StepSize',StepSize);
 %% 0) User choices
 mt = 1;    % Motor choice
 bt=1;      % Battery choice
-dc = 5;    % Drive‑cycle choice
+dc = 6;    % Drive‑cycle choice
 
 
 %% 1) Motor parameters as Simulink.Parameter objects
@@ -363,6 +364,35 @@ assignin('base','parametersBus',parametersBus);
     assignin('base', 'm_trail', 1800);
 
     stopTime = time(end);
+
+    case 6  % 0 -> 15 km/h with constant acceleration
+    % Parameters
+    a = 0.4;                 % [m/s^2] constant acceleration
+    v_final_kmh = 15;        % [km/h]
+    v_final = v_final_kmh/3.6;   % [m/s]
+
+    % Duration needed to reach 15 km/h at constant accel
+    duration_s = v_final / a;    % [s]
+
+    % Time vector: sampled at 10 Hz
+    Ts = 0.1;                     % [s]
+    time = (0:Ts:duration_s)';    % [s]
+
+    % Speed profile (km/h): linear ramp
+    speed = (a * time) * 3.6;     % [km/h]
+    speed = min(speed, v_final_kmh);  % ensure it doesn't exceed 15 km/h
+
+    % Create timeseries
+    ts_speed = timeseries(speed, time);
+    assignin('base', 'ts_speed', ts_speed);
+
+    % Assign parameters (keep same as your other cases, change if you want)
+    assignin('base', 'grade', 0.02);          % [-]
+    assignin('base', 'friction_coeff', 0.004);
+    assignin('base', 'm_trail', 1800);
+
+    stopTime = time(end);
+
 
            
         otherwise
