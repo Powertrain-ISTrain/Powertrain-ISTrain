@@ -1,6 +1,10 @@
 % --- regenerative braking simulation (boost converter model) ---
 clear; clc; close all;
 
+%Note:
+
+
+
 
 
 
@@ -69,7 +73,6 @@ t_wheels = f_braking * wheelradius;
 t_motor = t_wheels/gearratio;
 t_per_motor = t_motor/2;
 brakingcurrent = t_per_motor/kt;
-
 
 
 
@@ -146,7 +149,7 @@ fprintf('Starting phase 2 - travel with energy recovered\n\n');
 % calculate current input to motor while accelerating (NEGLETING INCLINED PLANE)
 
 %when accelerating
-total_traction_force = (mass * acceleration) + (mass * 9.81 * crr);
+total_traction_force = (mass * acceleration) + (mass * 9.81 * crr);%assuming plane
 torque_wheels = total_traction_force * wheelradius;
 torque_motor = torque_wheels/(gearratio * 0.85);
 torque_per_motor = torque_motor/2;
@@ -156,7 +159,7 @@ fprintf('Current during Acceleration per motor: %.2f Amps\n', current_accel_per_
 
 
 % when cruising (a=0)
-f_friction = mass * 9.81 * crr;
+f_friction = mass * 9.81 * crr;%assuming plane
 t_wheel_cruise = f_friction * wheelradius;
 t_motor_cruise = t_wheel_cruise /(gearratio*0.85);
 t_per_motor_cruise = t_motor_cruise / 2;

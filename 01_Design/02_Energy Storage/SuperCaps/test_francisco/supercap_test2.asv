@@ -8,9 +8,6 @@ clear; clc; close all;
 %-----------------------------------------------------------------------------------------------------------------
 %-----------------------------------------------------------------------------------------------------------------
 
-mass = 400 + ;           % mass of train (kg)
-wheelradius = 0.1;     % radius (meters)
-gearratio = 10;        % gear ratio
 crr = 0.004;
 
 
@@ -21,7 +18,6 @@ decel_rate = 0.6;                         % braking of 0.6 m/s^2
 
 % ACCELERATION
 target_speed_kmh = 15;                    % target speed to reach when accelerating using energy recovered
-acceleration = 0.4;
 
 
 % MOTOR CONSTANTS
@@ -30,7 +26,6 @@ nominal_rpm = 4000;
 pair_poles = 4;
 
 B = 1.0;                                  % Tesla (max magnetic flux)
-k_h = 0.015;                               % W/(Hz·T^n·kg)
 k_e = 0.0003;                             % W/(Hz^2·T^2·kg)
 n   = 1.6;
 m_fe = 2.7;                               % kg of stator iron per motor
@@ -45,7 +40,6 @@ cap_pre_charge = 44;                      % pre-charge voltage (volts)
 
 
 
-%% ----------------------------- DON'T REPLACE!! ---------------------------------------------
 
 
 
@@ -69,7 +63,6 @@ t_wheels = f_braking * wheelradius;
 t_motor = t_wheels/gearratio;
 t_per_motor = t_motor/2;
 brakingcurrent = t_per_motor/kt;
-
 
 
 
@@ -97,7 +90,6 @@ while initial_speed > 0.05
 
     
     % calculate motor back emf
-    v_motor = motor_w * ke - r_circuit*brakingcurrent;     %subtrair Rint/2 * braking currect
     
     % calculate braking torque & force
     % torque = kt * current * gearratio
@@ -146,7 +138,6 @@ fprintf('Starting phase 2 - travel with energy recovered\n\n');
 % calculate current input to motor while accelerating (NEGLETING INCLINED PLANE)
 
 %when accelerating
-total_traction_force = (mass * acceleration) + (mass * 9.81 * crr);
 torque_wheels = total_traction_force * wheelradius;
 torque_motor = torque_wheels/(gearratio * 0.85);
 torque_per_motor = torque_motor/2;
@@ -156,7 +147,6 @@ fprintf('Current during Acceleration per motor: %.2f Amps\n', current_accel_per_
 
 
 % when cruising (a=0)
-f_friction = mass * 9.81 * crr;
 t_wheel_cruise = f_friction * wheelradius;
 t_motor_cruise = t_wheel_cruise /(gearratio*0.85);
 t_per_motor_cruise = t_motor_cruise / 2;
