@@ -33,7 +33,7 @@ B = 1.0;                                  % Tesla (max magnetic flux)
 k_h = 0.015;                              % W/(Hz·T^n·kg)
 k_e = 0.0003;                             % W/(Hz^2·T^2·kg)
 n   = 1.6;
-m_fe = 2.7;                               % kg of stator iron per motor
+m_fe = 7.6*0.35;                               % kg of stator iron per motor
 
 
 
@@ -170,8 +170,11 @@ fprintf('Current during Cruising per motor: %.2f Amps\n', current_cruise_per_mot
 target_speed = target_speed_kmh/3.6;
 velocity_drive = 0;
 distance_total = 0;
+distance_at_empty = 0;
+has_reached_limit = false;
 time_drive = 0;
 results_drive = [];
+
 
 
 % driving loop
@@ -275,6 +278,19 @@ while true
         i_cap_out = p_cap_draw / cap_voltage;
         dV = (i_cap_out * dt) / c;
         cap_voltage = cap_voltage - dV;
+
+
+
+        if cap_voltage <= cap_pre_charge && ~has_reached_limit
+
+            distance_at_empty = distance_total;
+            has_reached_limit = true;
+        
+        end
+
+
+
+
         
     end
         
@@ -433,6 +449,9 @@ mins = floor(time_drive / 60);
 secs = rem(time_drive, 60);
 
 fprintf('Distance travelled:              %.2f meters\n', distance_total);
+if has_reached_limit
+    fprintf('Distance until pre-charge limit: %.2f meters\n', distance_at_empty);
+end
 fprintf('Time elapsed:                    %d min %.0f sec\n', mins, secs);
 fprintf('Final supercapacitor voltage:    %.2f V\n', cap_voltage);
 fprintf('--------------------------------------\n\n');
