@@ -18,14 +18,18 @@ gearratio = 10;                           % gear ratio
 crr = 0.004;
 
 
+% current limit - prevents infinite power at low voltages
+max_current_limit = 150;                  % Amps
+
+
 % BRAKING
 initial_speed = 4.17;                     % initial speed (15 km/h in m/s)
 decel_rate = 0.4;                         % braking of 0.6 m/s^2
 
 
 % ACCELERATION
-target_speed_kmh = 5;                    % target speed to reach when accelerating using energy recovered
-acceleration = 0.2;
+target_speed_kmh = 15;                    % target speed to reach when accelerating using energy recovered
+acceleration = 0.4;
 
 
 % MOTOR CONSTANTS
@@ -44,7 +48,7 @@ m_fe = 7.6*0.35;                               % kg of stator iron per motor
 
 % SUPERCAPACITOR CONSTANTS
 c = 165;                                  % capacitance (farads)
-cap_pre_charge = 44;                      % pre-charge voltage (volts)
+cap_pre_charge = 1;                      % pre-charge voltage (volts)
 
 
 
@@ -183,126 +187,119 @@ results_drive = [];
 % driving loop
 while true
 
+    % 1. CHECK ENERGY STATUS
     if cap_voltage > cap_pre_charge
         has_energy = true;
     else
         has_energy = false;
     end
 
-
+    % 2. DETERMINE DESIRED CURRENT (Target)
     if has_energy == true
-
-
         if velocity_drive < target_speed
-            %accelerating
-            current_now = current_accel_per_motor;
-            mode = 1;       %acceleration
-        
+            current_target = current_accel_per_motor;
+            mode = 1;       % accel
         else
-            %cruising
-            current_now = current_cruise_per_motor;
+            current_target = current_cruise_per_motor;
             mode = 2;       % cruise
         end
-
     else
-        %coasting
-        current_now = 0;
-        mode = 3;
+        current_target = 0;
+        mode = 3;           % coast
     end
 
 
+    % 3. *** NEW LOGIC: CHECK CURRENT LIMIT & UPDATE CAPACITOR ***
+    % We do this BEFORE calculating force, so we know if we actually have power.
+    
+    current_real = current_target; % Default assumption
+    
+    wheelrpm_drive = (velocity_drive * 60) / (2 * pi * wheelradius);
+    motor_w_drive = (wheelrpm_drive * gearratio) * (2*pi/60);
+    v_bemf = motor_w_drive * ke - r_circuit*current_real;
+    
+    if has_energy
+        % Calculate Losses
+        f_e = pair_poles * motor_w_drive / (2*pi);
+        p_fe_total = 2 * (k_h * f_e * B^n * m_fe + k_e * f_e^2 * B^2 * m_fe);
+
+        % Power needed from capacitor
+        p_mech_elec = (v_bemf * current_real) * 2;
+        p_total_load = p_mech_elec + p_fe_total;
+        p_needed_from_cap = p_total_load / 0.85;
+        
+        % Current needed from capacitor
+        i_cap_needed = p_needed_from_cap / cap_voltage;
+        
+        % --- THE LIMITER ---
+        if i_cap_needed > max_current_limit
+            % We cannot provide this much current! Clamp it.
+            i_cap_out = max_current_limit;
+            
+            % Recalculate what the motor actually gets
+            p_available = i_cap_out * cap_voltage * 0.85;
+            p_for_torque = p_available - p_fe_total;
+            
+            if v_bemf > 0.1
+                current_real = p_for_torque / (2 * v_bemf);
+            else
+                current_real = max_current_limit; % Stall torque limit
+            end
+            
+            % prevent negative current logic errors
+            if current_real < 0, current_real = 0; end
+            
+        else
+            % We are fine, supply requested current
+            i_cap_out = i_cap_needed;
+            current_real = current_target;
+        end
+        
+        % Discharge Capacitor
+        dV = (i_cap_out * dt) / c;
+        cap_voltage = cap_voltage - dV;
+
+        if cap_voltage <= cap_pre_charge && ~has_reached_limit
+            distance_at_empty = distance_total;
+            has_reached_limit = true;
+        end
+    else
+        current_real = 0;
+    end
+
+    % 4. CALCULATE FORCE WITH REAL CURRENT
     if mode == 3
-        %coasting
         force_push = 0;
-
     else
-        torque_produced = 2 * (current_now * kt) * gearratio * 0.85;
-        force_push = torque_produced / wheelradius;                         %force that moves the train
-
+        torque_produced = 2 * (current_real * kt) * gearratio * 0.85;
+        force_push = torque_produced / wheelradius;
     end
 
-
-    %compute real acceleration
-    crr_force = mass*9.81*crr;                      %rolling resistance force
-    f_mech = 0.002*mass*9.81;                       %estimate for drag on gearbox and bearings
+    % 5. MECHANICAL PHYSICS
+    crr_force = mass*9.81*crr;
+    f_mech = 0.002*mass*9.81;
     force_resistive = crr_force + f_mech;
 
     force_net = force_push - force_resistive;
     accel_real = force_net / mass;
 
-    % update speed
     velocity_drive = velocity_drive + (accel_real * dt);
 
-
-
-    % speed limiter 
+    % Speed limiter 
     if velocity_drive > target_speed && mode ~= 3
         velocity_drive = target_speed;
     end
 
-    %stopping condition
+    % Stopping condition
     if velocity_drive <= 0.05 && mode == 3
         break;
     end
 
     distance_total = distance_total + (velocity_drive * dt);
-
-    wheelrpm_drive = (velocity_drive * 60) / (2 * pi * wheelradius);
-    motor_w_drive = (wheelrpm_drive * gearratio) * (2*pi/60);
-    v_bemf = motor_w_drive * ke - r_circuit*current_now;
-
-
-    %Steinmetz power losses
-    f_e = pair_poles * motor_w_drive / (2*pi);
-
-    p_h = k_h * f_e * B^n * m_fe;
-    p_e = k_e * f_e^2 * B^2 * m_fe;
-
-    p_fe_one_motor = p_h + p_e;
-    p_fe_total = 2 * p_fe_one_motor;
-
-
-    % updating supercapacitor voltage
-    if has_energy
-    
-        voltage_headroom = cap_voltage - v_bemf;
-        if voltage_headroom <= 0
-            % if back-emf > voltage on capacitor current cannot flow
-            velocity_drive = velocity_drive * 0.99;
-            current_now = 0;
-        end
-    
-        p_mech_elec = (v_bemf * current_now) * 2;
-        p_total = p_mech_elec + p_fe_total;
-    
-        p_cap_draw = p_total / 0.85;
-        
-    
-        i_cap_out = p_cap_draw / cap_voltage;
-        dV = (i_cap_out * dt) / c;
-        cap_voltage = cap_voltage - dV;
-
-
-
-        if cap_voltage <= cap_pre_charge && ~has_reached_limit
-
-            distance_at_empty = distance_total;
-            has_reached_limit = true;
-        
-        end
-
-
-
-
-        
-    end
-        
-
-
     time_drive = time_drive + dt;
-    results_drive = [results_drive; time_drive, velocity_drive, cap_voltage, distance_total, mode, v_bemf, accel_real];
-
-
+    
+    % Store real current for plotting
+    results_drive = [results_drive; time_drive, velocity_drive, cap_voltage, distance_total, mode, v_bemf, current_real];
 end
 
     
